@@ -1,60 +1,84 @@
-// Payment reminder rules engine (part 1).
+// Payment reminder rules engine (part 1), command line.
 //
 // Run from inside typescript/ (after npm install):
 //
 //   npm run plan -- --invoices ../data/invoices.json --sent ../data/sent.json --today 2026-10-12 --out ../actions.json
 //
-// This starter only reads the files and writes an empty plan in the required shape.
-// The rules are yours to build.
+// The rules themselves live in rules.ts; this file only handles arguments and files.
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
+import { isValidDate } from "./dates";
+import { buildPlan } from "./rules";
 
-export interface Plan {
-  today: string;
-  actions: unknown[];
-  skipped: unknown[];
-}
+export { buildPlan } from "./rules";
+export type { Plan, Action, Skipped } from "./rules";
 
-/**
- * Return the plan for `today`.
- * invoices: the list from invoices.json
- * sent: the list from sent.json
- * today: a date string, YYYY-MM-DD
- */
-export function buildPlan(invoices: unknown[], sent: unknown[], today: string): Plan {
-  // TODO: apply the rules in README.md part 1 and fill both lists,
-  // sorted by invoice id. Each action also needs a message (part 3).
-  void invoices;
-  void sent;
-  return { today, actions: [], skipped: [] };
-}
+const USAGE = "Usage: npm run plan -- --invoices FILE --sent FILE --today YYYY-MM-DD --out FILE";
 
-export function readJson(path: string): unknown {
-  return JSON.parse(readFileSync(path, "utf-8"));
-}
+/** A problem the user can fix; shown as a plain message without a stack trace. */
+export class InputError extends Error {}
 
-function main(): void {
-  const { values } = parseArgs({
-    options: {
-      invoices: { type: "string" },
-      sent: { type: "string" },
-      today: { type: "string" },
-      out: { type: "string" },
-    },
-  });
-  if (!values.invoices || !values.sent || !values.today || !values.out) {
-    console.error("Usage: npm run plan -- --invoices FILE --sent FILE --today YYYY-MM-DD --out FILE");
-    process.exit(2);
+/** Read a JSON file that must hold a list. `label` names the file in error messages. */
+export function readJsonList(path: string, label: string): unknown[] {
+  let text: string;
+  try {
+    text = readFileSync(path, "utf-8");
+  } catch (err) {
+    throw new InputError(`Cannot read ${label} file "${path}": ${(err as Error).message}`);
   }
-  const invoices = readJson(values.invoices) as unknown[];
-  const sent = readJson(values.sent) as unknown[];
-  const plan = buildPlan(invoices, sent, values.today);
-  writeFileSync(values.out, JSON.stringify(plan, null, 2) + "\n", "utf-8");
+  let data: unknown;
+  try {
+    data = JSON.parse(text.replace(/^﻿/, ""));
+  } catch (err) {
+    throw new InputError(`${label} file "${path}" is not valid JSON: ${(err as Error).message}`);
+  }
+  if (!Array.isArray(data)) throw new InputError(`${label} file "${path}" must contain a JSON list`);
+  return data;
 }
 
-// Run main() only when this file is started directly, not when a test imports it.
+/** Run the command with the given arguments; returns the process exit code. */
+export function run(argv: string[]): number {
+  try {
+    let values;
+    try {
+      ({ values } = parseArgs({
+        args: argv,
+        options: {
+          invoices: { type: "string" },
+          sent: { type: "string" },
+          today: { type: "string" },
+          out: { type: "string" },
+        },
+      }));
+    } catch (err) {
+      throw new InputError(`${(err as Error).message}\n${USAGE}`);
+    }
+    if (!values.invoices || !values.sent || !values.today || !values.out) {
+      throw new InputError(USAGE);
+    }
+    if (!isValidDate(values.today)) {
+      throw new InputError(`--today must be a real date as YYYY-MM-DD, got "${values.today}"`);
+    }
+
+    const invoices = readJsonList(values.invoices, "invoices");
+    const sent = readJsonList(values.sent, "sent");
+    const plan = buildPlan(invoices, sent, values.today);
+
+    try {
+      writeFileSync(values.out, JSON.stringify(plan, null, 2) + "\n", "utf-8");
+    } catch (err) {
+      throw new InputError(`Cannot write output file "${values.out}": ${(err as Error).message}`);
+    }
+    return 0;
+  } catch (err) {
+    console.error(err instanceof InputError ? `Error: ${err.message}` : err);
+    return err instanceof InputError ? 2 : 1;
+  }
+}
+
+// Run only when this file is started directly, not when a test imports it.
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  main();
+  process.exitCode = run(process.argv.slice(2));
 }
